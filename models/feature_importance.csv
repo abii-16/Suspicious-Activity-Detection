@@ -1,0 +1,36 @@
+Feature,Importance
+Payment Format,0.35998777
+Unique_Receivers,0.09135683
+Amount_Diff,0.060407612
+Amount Received,0.038086127
+Cross_Bank,0.03574246
+Minutes_Since_Last,0.033659674
+Currency_Change,0.03361073
+Rapid_5m,0.030992275
+Day,0.02848209
+Unique_Senders,0.025110247
+Sender_Tx_Count,0.022705626
+Rapid_10m,0.019545037
+Daily_Tx_Count,0.018460428
+Receiver_Tx_Count,0.018419027
+Weekend,0.017911037
+Account,0.017623698
+Sender_Avg,0.013621404
+Amount Paid,0.012205707
+Receiver_Deviation,0.009516237
+From Bank,0.009018036
+Sender_Deviation,0.008842857
+Account.1,0.008588194
+Log_Amount,0.008382706
+Amount_Ratio,0.007817715
+Weekday,0.007734506
+High_Value,0.0075104125
+To Bank,0.007401653
+Receiver_Avg,0.0073838118
+Rapid_30m,0.007138217
+Daily_Sent_Amount,0.0069525647
+Payment Currency,0.0069221356
+Hour,0.0066446704
+Near_Threshold,0.0065315925
+Receiving Currency,0.0056868712
+Month,0.0
