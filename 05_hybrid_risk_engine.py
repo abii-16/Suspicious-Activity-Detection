@@ -136,19 +136,53 @@ print(top[[
 ]].head(20))
 
 # ============================================
-# Save
+# Save Compact Risk Predictions
 # ============================================
 
-top.to_csv(
+required_columns = [
+    "Account",
+    "Account.1",
+    "From Bank",
+    "To Bank",
+    "Amount Paid",
+    "Amount Received",
+    "Payment Currency",
+    "Receiving Currency",
+    "Payment Format",
+    "Cross_Bank",
+    "Currency_Change",
+    "Rapid_5m",
+    "Rapid_10m",
+    "Rapid_30m",
+    "High_Value",
+    "Near_Threshold",
+    "Unique_Receivers",
+    "Unique_Senders",
+    "Sender_Deviation",
+    "Receiver_Deviation",
+    "Is Laundering",
+    "XGB Score",
+    "Isolation Score",
+    "Final Risk Score",
+    "Risk Level",
+    "Recommended Action"
+]
 
+# Keep only columns that actually exist
+available_columns = [
+    c for c in required_columns
+    if c in top.columns
+]
+
+compact_df = top[available_columns]
+
+compact_df.to_csv(
     "data/risk_predictions.csv",
-
     index=False
-
 )
 
 print()
-
-print("Saved")
-
+print("Saved:")
 print("data/risk_predictions.csv")
+print("Rows:", len(compact_df))
+print("Columns:", len(compact_df.columns))
