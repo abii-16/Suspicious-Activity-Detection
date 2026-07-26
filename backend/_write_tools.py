@@ -1,3 +1,9 @@
+"""Run this once to rebuild tools.py with all functions."""
+import pathlib, sys
+
+src = pathlib.Path(__file__).parent / "tools.py"
+
+code = """\
 from __future__ import annotations
 import logging, math
 from typing import Any, Dict, List, Optional
@@ -327,7 +333,16 @@ def get_dashboard_stats(filters=None):
         "payment_format_distribution": df["Payment Format"].value_counts().head(8).to_dict() if "Payment Format" in df.columns and total else {},
         "top_suspicious_transactions": top_suspicious_transactions(n=10, filters=filters).get("transactions", []),
     })
+"""
 
+src.write_text(code, encoding="utf-8")
+print("Written", len(code), "chars,", code.count("\\n"), "lines")
+print("Functions:", [l.split("(")[0].replace("def ","") for l in code.split("\\n") if l.startswith("def ")])
+
+# The script above writes everything except the 5 new tools.
+# Append them now:
+
+EXTRA = """
 
 def analytics_tool(group_by="bank", metric="suspicious_transactions", top_n=10, filters=None):
     df = _apply_filters(get_risk_predictions_df(), filters) if filters else get_risk_predictions_df()
@@ -470,3 +485,10 @@ __all__ = [
     "analytics_tool", "investigation_tool", "pattern_detection_tool",
     "comparison_tool", "knowledge_tool",
 ]
+"""
+
+existing = src.read_text(encoding="utf-8")
+src.write_text(existing + EXTRA, encoding="utf-8")
+print("Final lines:", (existing + EXTRA).count("\\n"))
+fns = [l.split("(")[0].replace("def ","") for l in (existing + EXTRA).split("\\n") if l.startswith("def ")]
+print("Functions:", fns)

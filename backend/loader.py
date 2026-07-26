@@ -1,18 +1,8 @@
 """
 loader.py
 
-Central resource loader for the AML Agent backend.
-
-Loads ML models and datasets once at application startup and keeps them
-cached as module-level singletons. All other backend modules should import
-resources from here rather than loading files directly.
-
-Loaded resources:
-    - XGBoost classifier          (models/xgb_model.pkl)
-    - Isolation Forest model      (models/isolation_forest.pkl)
-    - Label encoders              (models/label_encoders.pkl)
-    - Feature matrix              (data/features.csv)
-    - Pre-computed risk scores    (data/risk_predictions.csv)
+Central resource loader. Loads ML models, datasets, and pre-computes EDA
+stats once at startup so dataset queries are served from memory.
 """
 
 from __future__ import annotations
@@ -26,10 +16,6 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Paths (resolved relative to project root, not the working directory)
-# ---------------------------------------------------------------------------
-
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 MODELS_DIR: Path = PROJECT_ROOT / "models"
 DATA_DIR: Path = PROJECT_ROOT / "data"
@@ -40,27 +26,22 @@ LABEL_ENCODERS_PATH: Path = MODELS_DIR / "label_encoders.pkl"
 FEATURES_PATH: Path = DATA_DIR / "features.csv"
 RISK_PREDICTIONS_PATH: Path = DATA_DIR / "risk_predictions.csv"
 
-# ---------------------------------------------------------------------------
-# Constants derived from the feature matrix after loading
-# ---------------------------------------------------------------------------
-
 TARGET_COLUMN: str = "Is Laundering"
 FEATURE_COLUMNS: List[str] = []
-
-# ---------------------------------------------------------------------------
-# Cached singletons (None until load_all() is called)
-# ---------------------------------------------------------------------------
 
 _xgb_model: Optional[Any] = None
 _isolation_forest: Optional[Any] = None
 _label_encoders: Optional[Dict[str, Any]] = None
 _features_df: Optional[pd.DataFrame] = None
 _risk_predictions_df: Optional[pd.DataFrame] = None
+_eda_cache: Optional[Dict[str, Any]] = None
+# Customer index: account_id (int) → sorted array of integer row positions in _risk_predictions_df
+# Built as a plain dict of numpy int arrays — cheap to build, O(1) lookup, minimal memory overhead
+_customer_index: Optional[Dict[int, Any]] = None
 _loaded: bool = False
 
 
 def _require_file(path: Path) -> None:
-    """Raise FileNotFoundError with a clear message if a resource is missing."""
     if not path.is_file():
         raise FileNotFoundError(
             f"Required AML resource not found: {path}. "
@@ -68,36 +49,85 @@ def _require_file(path: Path) -> None:
         )
 
 
+def _compute_eda_cache(df: pd.DataFrame) -> Dict[str, Any]:
+    """Pre-compute all EDA statistics. Called once at startup."""
+    from backend.utils import safe_json, format_currency
+
+    total_rows = len(df)
+    total_columns = len(df.columns)
+    fraud_pct = round(float(df[TARGET_COLUMN].mean() * 100), 4) if total_rows else 0.0
+    avg_amount = round(float(df["Amount Paid"].mean()), 2) if total_rows else 0.0
+    amount_min = round(float(df["Amount Paid"].min()), 2) if total_rows else 0.0
+    amount_max = round(float(df["Amount Paid"].max()), 2) if total_rows else 0.0
+    amount_median = round(float(df["Amount Paid"].median()), 2) if total_rows else 0.0
+    total_laundering = int(df[TARGET_COLUMN].sum()) if TARGET_COLUMN in df.columns else 0
+
+    top_banks: Dict[str, int] = {}
+    if "From Bank" in df.columns:
+        top_banks = {str(k): int(v) for k, v in df["From Bank"].value_counts().head(8).items()}
+
+    top_currencies: Dict[str, int] = {}
+    if "Payment Currency" in df.columns:
+        top_currencies = {str(k): int(v) for k, v in df["Payment Currency"].value_counts().head(8).items()}
+
+    payment_formats: Dict[str, int] = {}
+    if "Payment Format" in df.columns:
+        payment_formats = {str(k): int(v) for k, v in df["Payment Format"].value_counts().head(8).items()}
+
+    risk_distribution: Dict[str, int] = {}
+    if "Risk Level" in df.columns:
+        risk_distribution = {str(k): int(v) for k, v in df["Risk Level"].value_counts().items()}
+
+    top_fraud_bank = None
+    if "From Bank" in df.columns and TARGET_COLUMN in df.columns:
+        fraud_by_bank = df[df[TARGET_COLUMN] == 1]["From Bank"].value_counts()
+        if len(fraud_by_bank):
+            top_fraud_bank = str(fraud_by_bank.index[0])
+
+    dataset_summary = (
+        f"{total_rows:,} transactions across {total_columns} columns. "
+        f"{total_laundering:,} flagged as laundering ({fraud_pct}%). "
+        f"Average transaction: {format_currency(avg_amount)}."
+    )
+
+    return safe_json({
+        "total_rows": total_rows,
+        "total_columns": total_columns,
+        "fraud_percentage": fraud_pct,
+        "total_laundering_transactions": total_laundering,
+        "average_amount": avg_amount,
+        "average_amount_formatted": format_currency(avg_amount),
+        "amount_min": amount_min,
+        "amount_max": amount_max,
+        "amount_max_formatted": format_currency(amount_max),
+        "amount_median": amount_median,
+        "top_banks": top_banks,
+        "top_currencies": top_currencies,
+        "payment_formats": payment_formats,
+        "risk_distribution": risk_distribution,
+        "top_fraud_bank": top_fraud_bank,
+        "dataset_summary": dataset_summary,
+        # backward compat keys for dashboard and analytics page
+        "rows": total_rows,
+        "fraud_pct": fraud_pct,
+        "currency_distribution": top_currencies,
+        "top_payment_formats": payment_formats,
+        "top_banks_legacy": top_banks,
+    })
+
+
 def load_all(*, force: bool = False) -> None:
-    """
-    Load all models and datasets into the module cache.
-
-    Safe to call multiple times; subsequent calls are no-ops unless
-    ``force=True`` is passed.
-
-    Args:
-        force: When True, reload all resources even if already cached.
-
-    Raises:
-        FileNotFoundError: If any required model or data file is missing.
-        Exception: Propagates joblib/pandas errors from corrupt files.
-    """
     global _xgb_model, _isolation_forest, _label_encoders
     global _features_df, _risk_predictions_df, _loaded, FEATURE_COLUMNS
+    global _eda_cache, _customer_index
 
     if _loaded and not force:
-        logger.debug("AML resources already loaded; skipping.")
         return
 
     logger.info("Loading AML resources from %s", PROJECT_ROOT)
 
-    for path in (
-        XGB_MODEL_PATH,
-        ISOLATION_FOREST_PATH,
-        LABEL_ENCODERS_PATH,
-        FEATURES_PATH,
-        RISK_PREDICTIONS_PATH,
-    ):
+    for path in (XGB_MODEL_PATH, ISOLATION_FOREST_PATH, LABEL_ENCODERS_PATH,
+                 FEATURES_PATH, RISK_PREDICTIONS_PATH):
         _require_file(path)
 
     logger.info("Loading XGBoost model …")
@@ -115,87 +145,95 @@ def load_all(*, force: bool = False) -> None:
     logger.info("Loading risk predictions dataset …")
     _risk_predictions_df = pd.read_csv(RISK_PREDICTIONS_PATH)
 
-    FEATURE_COLUMNS = [
-        column
-        for column in _features_df.columns
-        if column != TARGET_COLUMN
-    ]
+    FEATURE_COLUMNS = [c for c in _features_df.columns if c != TARGET_COLUMN]
+
+    logger.info("Pre-computing EDA cache …")
+    _eda_cache = _compute_eda_cache(_risk_predictions_df)
+    logger.info("EDA cache ready — %s rows pre-computed.", _eda_cache.get("total_rows"))
+
+    logger.info("Building customer index …")
+    if "Account" in _risk_predictions_df.columns:
+        # Use pandas groupby indices — pure C, no Python loop over 5M rows
+        groups = _risk_predictions_df.groupby("Account").indices
+        _customer_index = {int(k): v for k, v in groups.items()}
+        logger.info("Customer index ready — %s unique accounts.", len(_customer_index))
+    else:
+        _customer_index = {}
 
     _loaded = True
-
     logger.info(
-        "AML resources loaded — features: %s rows × %s cols, "
-        "risk_predictions: %s rows",
-        len(_features_df),
-        len(_features_df.columns),
-        len(_risk_predictions_df),
+        "AML resources loaded — features: %s rows × %s cols, risk_predictions: %s rows",
+        len(_features_df), len(_features_df.columns), len(_risk_predictions_df),
     )
 
 
 def _ensure_loaded() -> None:
-    """Load resources on first access if startup has not called load_all()."""
     if not _loaded:
         load_all()
 
 
-# ---------------------------------------------------------------------------
-# Public accessors
-# ---------------------------------------------------------------------------
-
-
 def get_xgb_model() -> Any:
-    """Return the cached XGBoost classifier."""
     _ensure_loaded()
     return _xgb_model
 
 
 def get_isolation_forest() -> Any:
-    """Return the cached Isolation Forest model."""
     _ensure_loaded()
     return _isolation_forest
 
 
 def get_label_encoders() -> Dict[str, Any]:
-    """Return the cached sklearn LabelEncoder dictionary."""
     _ensure_loaded()
     return _label_encoders  # type: ignore[return-value]
 
 
 def get_features_df() -> pd.DataFrame:
-    """Return the cached feature matrix (includes target column)."""
     _ensure_loaded()
     return _features_df.copy(deep=False)  # type: ignore[return-value]
 
 
 def get_risk_predictions_df() -> pd.DataFrame:
-    """Return the cached pre-computed risk predictions."""
     _ensure_loaded()
     return _risk_predictions_df.copy(deep=False)  # type: ignore[return-value]
 
 
 def get_feature_columns() -> List[str]:
-    """Return the list of ML feature column names (excludes target)."""
     _ensure_loaded()
     return list(FEATURE_COLUMNS)
 
 
+def get_eda_cache() -> Dict[str, Any]:
+    """Return pre-computed EDA stats. Falls back to live if not cached yet."""
+    _ensure_loaded()
+    if _eda_cache is not None:
+        return dict(_eda_cache)
+    return _compute_eda_cache(get_risk_predictions_df())
+
+
+def get_customer_df(customer_id: int) -> "Optional[pd.DataFrame]":
+    """
+    Return rows for a customer account using the pre-built position index.
+    O(1) dict lookup + O(k) iloc where k = number of customer transactions.
+    No full-dataset scan.
+    """
+    _ensure_loaded()
+    if _customer_index is None or _risk_predictions_df is None:
+        return None
+    positions = _customer_index.get(int(customer_id))
+    if positions is None or len(positions) == 0:
+        return None
+    return _risk_predictions_df.iloc[positions]
+
+
 def is_loaded() -> bool:
-    """Return True if all resources have been loaded into the cache."""
     return _loaded
 
 
 __all__ = [
-    "PROJECT_ROOT",
-    "MODELS_DIR",
-    "DATA_DIR",
-    "TARGET_COLUMN",
-    "FEATURE_COLUMNS",
+    "PROJECT_ROOT", "MODELS_DIR", "DATA_DIR",
+    "TARGET_COLUMN", "FEATURE_COLUMNS",
     "load_all",
-    "get_xgb_model",
-    "get_isolation_forest",
-    "get_label_encoders",
-    "get_features_df",
-    "get_risk_predictions_df",
-    "get_feature_columns",
-    "is_loaded",
+    "get_xgb_model", "get_isolation_forest", "get_label_encoders",
+    "get_features_df", "get_risk_predictions_df",
+    "get_feature_columns", "get_eda_cache", "get_customer_df", "is_loaded",
 ]

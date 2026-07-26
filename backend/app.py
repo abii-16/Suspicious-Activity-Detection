@@ -13,13 +13,16 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from backend import loader
+from backend.llm import generate_investigation_report, is_llm_available
 from backend.router import handle_query
 from backend.tools import (
     customer_summary,
     generate_explanation,
+    get_dashboard_stats,
     predict_transaction,
     rule_engine,
     run_eda,
@@ -48,6 +51,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -60,6 +71,7 @@ class PredictionRequest(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Natural-language AML query")
+    conversation_history: list = Field(default_factory=list, description="Previous turns for context")
 
 
 class RuleEngineRequest(BaseModel):
@@ -91,6 +103,7 @@ def home() -> Dict[str, Any]:
             "/transaction/{transaction_id}",
             "/rule_engine",
             "/query",
+            "/dashboard",
         ],
     }
 
@@ -100,6 +113,7 @@ def health() -> Dict[str, Any]:
     return {
         "status": "healthy",
         "models_loaded": loader.is_loaded(),
+        "llm_available": is_llm_available(),
     }
 
 
@@ -144,6 +158,11 @@ def eda() -> Dict[str, Any]:
     return run_eda()
 
 
+@app.get("/dashboard")
+def dashboard() -> Dict[str, Any]:
+    return get_dashboard_stats()
+
+
 @app.get("/top_suspicious")
 def top_suspicious(n: int = 20) -> Dict[str, Any]:
     if n < 1 or n > 100:
@@ -156,6 +175,22 @@ def customer(customer_id: int) -> Dict[str, Any]:
     result = customer_summary(customer_id)
     if not result.get("found"):
         raise HTTPException(status_code=404, detail=result.get("message", "Customer not found"))
+
+    llm_context = {
+        "query": f"Customer risk analysis for account {customer_id}",
+        "intent": "customer_lookup",
+        "aml_pattern": result.get("risk_level", "LOW"),
+        "risk_level": result.get("risk_level"),
+        "risk_score": result.get("max_risk_score"),
+        "explanation": (
+            f"Customer has {result.get('transaction_count', 0)} transactions, "
+            f"{result.get('suspicious_transactions', 0)} flagged as laundering, "
+            f"{result.get('high_risk_pct', 0)}% high/critical risk."
+        ),
+        "recommendation": result.get("recommendation"),
+        "customer_details": result,
+    }
+    result["llm_analysis"] = generate_investigation_report(llm_context)
     return result
 
 
@@ -164,6 +199,18 @@ def transaction(transaction_id: int) -> Dict[str, Any]:
     result = transaction_summary(transaction_id)
     if not result.get("found"):
         raise HTTPException(status_code=404, detail=result.get("message", "Transaction not found"))
+
+    llm_context = {
+        "query": f"Transaction investigation for ID {transaction_id}",
+        "intent": "transaction_lookup",
+        "aml_pattern": result.get("aml_pattern"),
+        "risk_level": result.get("risk_level"),
+        "risk_score": result.get("risk_score"),
+        "explanation": " | ".join(result.get("reasons", [])),
+        "recommendation": result.get("recommendation"),
+        "transaction_details": result,
+    }
+    result["llm_analysis"] = generate_investigation_report(llm_context)
     return result
 
 
@@ -182,7 +229,7 @@ def query(req: QueryRequest) -> Dict[str, Any]:
     ``execution_summary`` block designed for hackathon judge inspection.
     """
     try:
-        return handle_query(req.query)
+        return handle_query(req.query, req.conversation_history)
     except Exception as exc:
         logger.exception("Query execution failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
