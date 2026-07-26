@@ -460,6 +460,3 @@ If the key is missing, the system runs in **fallback mode**: all ML scoring and 
 
 ---
 
-## License
-
-Add your license of choice here (e.g., MIT, Apache 2.0).
