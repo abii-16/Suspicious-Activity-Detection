@@ -1,17 +1,17 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, Radio, Send, Terminal } from "lucide-react";
-import AgentQueryResult from "@/components/agent/AgentQueryResult";
-import ChatMessage from "@/components/ChatMessage";
+import { AlertTriangle, Bot, Send, Shield, User } from "lucide-react";
+import AMLAnswer from "@/components/AMLAnswer";
 import TypingIndicator from "@/components/TypingIndicator";
 import { query as runAgentQuery, apiErrorMessage } from "@/services/api";
 import type { QueryResponse } from "@/types/api";
 
-const SUGGESTED_QUERIES = [
-  "Find structuring patterns in the last 30 days",
-  "Show top 20 most suspicious transactions",
-  "Analyze the dataset and summarize fraud percentage",
-  "Find accounts with 10+ transactions under $10,000",
+const SUGGESTED = [
+  "Analyze the dataset",
+  "Show top 20 suspicious transactions",
+  "Find structuring patterns",
+  "Investigate transaction 0",
+  "Find accounts with rapid transactions",
 ];
 
 interface Turn {
@@ -21,36 +21,57 @@ interface Turn {
   error?: string;
 }
 
+// What we send back to the backend for context resolution
+type HistoryEntry = {
+  query: string;
+  entities?: Record<string, unknown>;
+  natural_response?: string;
+};
+
 export default function AgentPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Keep a compact history for context resolution
+  const historyRef = useRef<HistoryEntry[]>([]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [turns, loading]);
 
   async function runQuery(text: string) {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
 
-    const turnId = crypto.randomUUID();
-    setTurns((prev) => [...prev, { id: turnId, query: trimmed }]);
+    const id = crypto.randomUUID();
+    setTurns((prev) => [...prev, { id, query: trimmed }]);
     setInput("");
     setLoading(true);
 
     try {
-      const response = await runAgentQuery(trimmed);
-      setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, response } : t)),
-      );
+      const response = await runAgentQuery(trimmed, historyRef.current);
+
+      // Persist this turn in history for follow-up context
+      historyRef.current = [
+        ...historyRef.current.slice(-6), // keep last 6 turns
+        {
+          query: trimmed,
+          entities: response.entities as Record<string, unknown>,
+          natural_response: response.natural_response,
+        },
+      ];
+
+      setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, response } : t)));
     } catch (err) {
-      const message = apiErrorMessage(err);
       setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, error: message } : t)),
+        prev.map((t) => (t.id === id ? { ...t, error: apiErrorMessage(err) } : t)),
       );
     } finally {
       setLoading(false);
-      requestAnimationFrame(() => {
-        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-      });
+      inputRef.current?.focus();
     }
   }
 
@@ -60,48 +81,36 @@ export default function AgentPage() {
   }
 
   return (
-    <div className="relative flex min-h-[calc(100vh-4rem)] flex-col bg-[radial-gradient(ellipse_at_top,_rgba(59,130,246,0.08)_0%,_transparent_50%)]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.03)_1px,transparent_1px)] bg-[size:24px_24px] opacity-40" />
+    <div className="flex h-[calc(100vh-4rem)] flex-col bg-navy-950">
+      {/* Subtle grid background */}
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.02)_1px,transparent_1px)] bg-[size:32px_32px]" />
 
-      <div className="relative border-b border-navy-700/80 bg-navy-900/40 px-4 py-3 backdrop-blur-sm sm:px-6">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-accent/30 bg-accent/10">
-              <Radio className="h-5 w-5 text-accent-light" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-100">SOC Investigation Console</p>
-              <p className="text-xs text-slate-500">Natural language AML agent · live tool orchestration</p>
-            </div>
-          </div>
-          <div className="hidden items-center gap-2 rounded-full border border-risk-low/30 bg-risk-low/10 px-3 py-1 text-xs font-medium text-risk-low sm:flex">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-risk-low" />
-            Agent Ready
-          </div>
-        </div>
-      </div>
+      {/* Chat area */}
+      <div className="relative flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+        <div className="mx-auto max-w-3xl space-y-6">
 
-      <div ref={scrollRef} className="relative flex-1 overflow-y-auto px-4 py-6 sm:px-6">
-        <div className="mx-auto max-w-5xl space-y-8">
-          {turns.length === 0 ? (
+          {/* Empty state */}
+          {turns.length === 0 && !loading ? (
             <motion.div
-              initial={{ opacity: 0, y: 20 }}
+              initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
-              className="rounded-2xl border border-dashed border-navy-600 bg-navy-900/40 p-8 text-center"
+              className="flex flex-col items-center pt-16 text-center"
             >
-              <Terminal className="mx-auto mb-4 h-10 w-10 text-accent" />
-              <h2 className="text-lg font-semibold text-slate-100">Start an AML investigation</h2>
-              <p className="mx-auto mt-2 max-w-lg text-sm text-slate-400">
-                Ask in plain English. The agent will detect intent, build an execution plan, run tools,
-                and return risk assessments with full audit trail for judges.
+              <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-accent/30 bg-accent/10">
+                <Shield className="h-8 w-8 text-accent-light" />
+              </div>
+              <h2 className="text-xl font-semibold text-slate-100">AML Investigation Assistant</h2>
+              <p className="mt-2 max-w-md text-sm text-slate-400">
+                Ask anything about your transaction data. I'll investigate, analyze patterns,
+                and explain risk assessments in plain English.
               </p>
-              <div className="mt-6 flex flex-wrap justify-center gap-2">
-                {SUGGESTED_QUERIES.map((q) => (
+              <div className="mt-8 flex flex-wrap justify-center gap-2">
+                {SUGGESTED.map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => void runQuery(q)}
-                    className="rounded-lg border border-navy-600 bg-navy-800/80 px-3 py-2 text-left text-xs text-slate-300 transition hover:border-accent/40 hover:text-accent-light"
+                    className="rounded-lg border border-navy-600 bg-navy-800/60 px-4 py-2 text-sm text-slate-300 transition hover:border-accent/50 hover:bg-navy-800 hover:text-slate-100"
                   >
                     {q}
                   </button>
@@ -110,73 +119,97 @@ export default function AgentPage() {
             </motion.div>
           ) : null}
 
-          <AnimatePresence mode="popLayout">
-            {turns.map((turn) => (
+          {/* Conversation turns */}
+          <AnimatePresence initial={false}>
+            {turns.map((turn, idx) => (
               <motion.div
                 key={turn.id}
-                layout
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
                 className="space-y-4"
               >
-                <ChatMessage role="user">
-                  <p className="text-sm font-medium">{turn.query}</p>
-                  <p className="mt-1 text-[10px] uppercase tracking-widest text-slate-500">User Query</p>
-                </ChatMessage>
+                {/* User message */}
+                <div className="flex justify-end gap-3">
+                  <div className="max-w-lg rounded-2xl rounded-tr-sm border border-accent/25 bg-accent/10 px-4 py-3 text-sm text-slate-100">
+                    {turn.query}
+                  </div>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-accent/30 bg-accent/20">
+                    <User className="h-4 w-4 text-accent-light" />
+                  </div>
+                </div>
 
-                {!turn.response && !turn.error && loading && turns[turns.length - 1]?.id === turn.id ? (
-                  <ChatMessage role="assistant">
-                    <TypingIndicator />
-                  </ChatMessage>
-                ) : null}
+                {/* Assistant message or loading */}
+                <div className="flex gap-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-navy-600 bg-navy-800">
+                    <Bot className="h-4 w-4 text-accent" />
+                  </div>
+                  <div className="min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-navy-700 bg-navy-900/90 px-4 py-3">
+                    {/* Loading */}
+                    {!turn.response && !turn.error && loading && idx === turns.length - 1 ? (
+                      <TypingIndicator />
+                    ) : null}
 
-                {turn.error ? (
-                  <ChatMessage role="assistant">
-                    <div className="flex items-start gap-2 text-risk-critical">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <div>
-                        <p className="text-sm font-medium">Execution failed</p>
-                        <p className="mt-1 text-xs text-slate-400">{turn.error}</p>
+                    {/* Error */}
+                    {turn.error ? (
+                      <div className="flex items-start gap-2 text-risk-critical">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        <div>
+                          <p className="text-sm font-medium">Something went wrong</p>
+                          <p className="mt-0.5 text-xs text-slate-400">{turn.error}</p>
+                        </div>
                       </div>
-                    </div>
-                  </ChatMessage>
-                ) : null}
+                    ) : null}
 
-                {turn.response ? (
-                  <ChatMessage role="assistant">
-                    <AgentQueryResult data={turn.response} />
-                  </ChatMessage>
-                ) : null}
+                    {/* Answer */}
+                    {turn.response ? (
+                      <AMLAnswer data={turn.response} />
+                    ) : null}
+                  </div>
+                </div>
               </motion.div>
             ))}
           </AnimatePresence>
+
+          {/* Scroll anchor */}
+          <div ref={bottomRef} />
         </div>
       </div>
 
+      {/* Input bar */}
       <div className="relative border-t border-navy-700 bg-navy-900/80 px-4 py-4 backdrop-blur-md sm:px-6">
-        <form onSubmit={handleSubmit} className="mx-auto flex max-w-5xl gap-3">
-          <div className="relative flex-1">
-            <Terminal className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+        <form onSubmit={handleSubmit} className="mx-auto flex max-w-3xl items-end gap-3">
+          <div className="flex-1">
             <input
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="e.g. Find structuring patterns in the last 30 days"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void runQuery(input);
+                }
+              }}
+              placeholder="Ask about transactions, customers, patterns…"
               disabled={loading}
-              className="w-full rounded-xl border border-navy-600 bg-navy-950 py-3 pl-10 pr-4 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
+              autoComplete="off"
+              className="w-full rounded-xl border border-navy-600 bg-navy-950 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-60"
             />
           </div>
           <motion.button
             type="submit"
             disabled={loading || !input.trim()}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-white shadow-glow transition disabled:cursor-not-allowed disabled:opacity-50"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-white shadow-glow transition disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Send className="h-4 w-4" />
-            Run
           </motion.button>
         </form>
+        <p className="mx-auto mt-2 max-w-3xl text-center text-[10px] text-slate-600">
+          AI AML Agent · Powered by Hybrid ML + Groq LLaMA 3.3
+        </p>
       </div>
     </div>
   );

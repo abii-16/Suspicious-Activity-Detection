@@ -12,6 +12,9 @@ import {
 } from "lucide-react";
 import ExecutionTimeline from "@/components/ExecutionTimeline";
 import ExplanationCard from "@/components/ExplanationCard";
+import LLMReportCard from "@/components/LLMReportCard";
+import PipelineTimeline from "@/components/PipelineTimeline";
+import PlannerReasoning from "@/components/PlannerReasoning";
 import RecommendationCard from "@/components/RecommendationCard";
 import RiskBadge from "@/components/RiskBadge";
 import ToolExecutionTimeline from "@/components/ToolExecutionTimeline";
@@ -93,6 +96,16 @@ export default function AgentQueryResult({ data }: AgentQueryResultProps) {
   const transactions = extractTransactions(data.results);
   const execTime =
     summary?.total_execution_time_ms ?? summary?.total_execution_time_seconds ?? "—";
+  const pipeline = summary?.pipeline ?? [
+    "planner",
+    "router",
+    ...planSteps,
+    "hybrid_ml",
+    "llm",
+    "response",
+  ];
+  const reasoning = data.planner_reasoning ?? summary?.planner_reasoning ?? [];
+  const intentLabel = data.intent_label ?? summary?.intent_label ?? data.intent;
 
   return (
     <motion.div
@@ -112,6 +125,9 @@ export default function AgentQueryResult({ data }: AgentQueryResultProps) {
           <p className="font-mono text-sm font-semibold text-accent-light">
             {summary?.detected_intent ?? data.intent}
           </p>
+          {intentLabel && intentLabel !== (summary?.detected_intent ?? data.intent) ? (
+            <p className="mt-1 text-xs text-slate-400">{intentLabel}</p>
+          ) : null}
         </SocSection>
         <SocSection title="AML Pattern" icon={Target} delay={0.08}>
           <p className="text-sm font-medium text-slate-200">
@@ -156,6 +172,22 @@ export default function AgentQueryResult({ data }: AgentQueryResultProps) {
         <ExecutionTimeline steps={planSteps} details={planDetail} />
       </SocSection>
 
+      {reasoning.length > 0 ? (
+        <SocSection title="Planner Reasoning" icon={Sparkles} delay={0.17}>
+          <PlannerReasoning reasoning={reasoning} intentLabel={intentLabel} />
+        </SocSection>
+      ) : null}
+
+      <SocSection title="Agent Pipeline" icon={Layers} delay={0.18}>
+        <PipelineTimeline steps={pipeline} executedTools={data.tools_executed} />
+        {summary?.llm_inference_time_ms != null ? (
+          <p className="mt-3 text-[11px] text-slate-500">
+            LLM inference: {summary.llm_inference_time_ms} ms
+            {summary.llm_available === false ? " · Groq unavailable — fallback report used" : ""}
+          </p>
+        ) : null}
+      </SocSection>
+
       <SocSection title="Tool Execution Timeline" icon={Clock} delay={0.2}>
         <ToolExecutionTimeline tools={toolEntries} />
       </SocSection>
@@ -164,6 +196,10 @@ export default function AgentQueryResult({ data }: AgentQueryResultProps) {
         <RecommendationCard recommendation={data.recommendation} />
         <ExplanationCard explanation={data.explanation} />
       </div>
+
+      {data.investigation_report ? (
+        <LLMReportCard report={data.investigation_report} />
+      ) : null}
 
       {transactions.length > 0 ? (
         <motion.section
